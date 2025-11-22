@@ -1,0 +1,17 @@
+[package]
+name = "deka-gst-wgpu"
+version.workspace = true
+description.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gstreamer.workspace = true
+gstreamer-base.workspace = true
+gstreamer-video.workspace = true
+parking_lot.workspace = true
+pollster.workspace = true
+wgpu.workspace = true

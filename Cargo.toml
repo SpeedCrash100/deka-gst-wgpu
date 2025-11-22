@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = ["deka-gst-wgpu"]
+
+[workspace.package]
+version = "0.1.0"
+description = "Deka's WGPU integration with GStreamer"
+repository = "https://github.com/SpeedCrash100/deka-gst-wgpu"
+license = "MIT OR Apache-2.0"
+authors = ["Anton Kushakov (SpeedCrash100@yandex.ru)"]
+edition = "2021"
+rust-version = "1.84"
+
+[workspace.dependencies]
+gstreamer = "0.22"
+gstreamer-base = "0.22"
+gstreamer-video = "0.22"
+parking_lot = "0.12.5"
+pollster = "0.4.0"
+wgpu = { git = "https://github.com/gfx-rs/wgpu.git", rev = "119b4efada475f95507f8f577bf1abfe3d529fd0" }
