@@ -18,4 +18,5 @@ pub mod prelude {
     pub use buffer_memory::WgpuBufferMemoryExt;
 }
 
+pub use buffer_memory::{WgpuBufferMemory, WgpuBufferMemoryAllocator};
 pub use context::{PollType, WgpuContext, GST_CONTEXT_WGPU_TYPE};

@@ -1,0 +1,26 @@
+[package]
+name = "deka-gst-wgpu-plugins-image-processing"
+version.workspace = true
+description.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "gstdeka_wgpu_image_processing_rs"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+gstreamer.workspace = true
+gstreamer-base.workspace = true
+gstreamer-video.workspace = true
+parking_lot.workspace = true
+pollster.workspace = true
+wgpu.workspace = true
+deka-gst-wgpu = { path = "../deka-gst-wgpu" }
+
+[build-dependencies]
+gst-plugin-version-helper = "0.8"

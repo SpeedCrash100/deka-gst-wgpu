@@ -56,10 +56,10 @@ impl WgpuBufferMemoryExt for WgpuBufferMemory {
 }
 
 glib::wrapper! {
-    pub struct WgpuMemoryAllocator(ObjectSubclass<imp::WgpuMemoryAllocator>) @extends gst::Allocator, gst::Object;
+    pub struct WgpuBufferMemoryAllocator(ObjectSubclass<imp::WgpuMemoryAllocator>) @extends gst::Allocator, gst::Object;
 }
 
-impl WgpuMemoryAllocator {
+impl WgpuBufferMemoryAllocator {
     /// Crates an allocator that uses specified context for allocating buffers
     pub fn new(context: WgpuContext) -> Self {
         let out: Self = glib::Object::new();
@@ -267,7 +267,10 @@ mod imp {
         }
 
         let obj = gst::Allocator::from_glib_borrow(mem.allocator);
-        if obj.downcast_ref::<super::WgpuMemoryAllocator>().is_none() {
+        if obj
+            .downcast_ref::<super::WgpuBufferMemoryAllocator>()
+            .is_none()
+        {
             return false.into();
         }
 
@@ -347,7 +350,7 @@ mod imp {
     #[glib::object_subclass]
     impl ObjectSubclass for WgpuMemoryAllocator {
         const NAME: &'static str = "WgpuMemoryAllocator";
-        type Type = super::WgpuMemoryAllocator;
+        type Type = super::WgpuBufferMemoryAllocator;
         type ParentType = gst::Allocator;
 
         fn with_class(_class: &Self::Class) -> Self {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["deka-gst-wgpu"]
+members = ["deka-gst-wgpu", "deka-gst-wgpu-plugins-image-processing"]
 
 [workspace.package]
 version = "0.1.0"
