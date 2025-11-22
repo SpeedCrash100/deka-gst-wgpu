@@ -4,6 +4,13 @@ use gst::glib;
 use gst::prelude::*;
 
 glib::wrapper! {
+
+    /// Plugin that apply Sobel kernel to image
+    ///
+    /// # Sample pipeline
+    /// ```bash
+    /// gst-launch-1.0 filesrc location=video.mkv ! decodebin ! videoconvert ! queue ! dekawgpusobelmem ! videoconvert ! autovideosink
+    /// ```
     pub struct WgpuSobelMem(ObjectSubclass<imp::WgpuSobelMem>) @extends gst_video::VideoFilter, gst_base::BaseTransform, gst::Element, gst::Object;
 }
 

@@ -12,7 +12,7 @@ use crate::{glib, skip_assert_initialized, WgpuContext};
 
 static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
     gst::DebugCategory::new(
-        "gstwgpumemory",
+        "gstwgpubuffermemory",
         gst::DebugColorFlags::empty(),
         Some("Gstreamer WGPU Buffer memory"),
     )
