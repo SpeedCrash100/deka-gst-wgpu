@@ -74,6 +74,21 @@ impl WgpuBufferMemoryAllocator {
         out
     }
 
+    /// Creates allocator which uses specified buffer usage instead of figure out them
+    pub fn new_with_explicit_usage(context: WgpuContext, usages: wgpu::BufferUsages) -> Self {
+        let out: Self = glib::Object::new();
+
+        let imp = out.imp();
+        // SAFETY: We set context one time, it does not mutate after creation
+        // The creation itself cannot be parallel to be a problem
+        unsafe {
+            *imp.context.get() = Some(context);
+            *imp.usages.get() = Some(usages);
+        };
+
+        out
+    }
+
     pub fn alloc(
         &self,
         size: usize,
@@ -332,6 +347,7 @@ mod imp {
     #[derive(Debug)]
     pub struct WgpuMemoryAllocator {
         pub(super) context: UnsafeCell<Option<WgpuContext>>,
+        pub(super) usages: UnsafeCell<Option<wgpu::BufferUsages>>,
     }
 
     impl WgpuMemoryAllocator {
@@ -356,6 +372,7 @@ mod imp {
         fn with_class(_class: &Self::Class) -> Self {
             Self {
                 context: Default::default(),
+                usages: Default::default(),
             }
         }
     }
@@ -413,11 +430,24 @@ mod imp {
             };
 
             let mem_flags = gst::MemoryFlags::from_bits_truncate(flags);
-            let usages = if mem_flags.contains(gst::MemoryFlags::READONLY) {
-                wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ
-            } else {
-                wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE
+
+            let read_only = mem_flags.contains(gst::MemoryFlags::READONLY);
+            let explicit_usage = unsafe { *self.usages.get() };
+
+            let usages = match (explicit_usage, read_only) {
+                (Some(usage), _) => usage,
+                (None, true) => wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                (None, false) => wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
             };
+
+            // Reject if we are trying to create mappable buffer with no usage MAP_* usage
+            if !mem_flags.contains(gst::MemoryFlags::NOT_MAPPABLE)
+                && !usages.intersects(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE)
+            {
+                return Err(glib::bool_error!(
+                    "trying to alloc not mappable memory without setting NOT_MAPPABLE"
+                ));
+            }
 
             let wgpu_buffer = self.device().create_buffer(&wgpu::BufferDescriptor {
                 label: None,
