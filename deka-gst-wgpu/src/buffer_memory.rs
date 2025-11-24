@@ -20,6 +20,9 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 
 /// Caps with this feature implies that the buffer is a WGPU buffer.
 pub const GST_CAPS_FEATURE_MEMORY_WGPU_BUFFER: &str = "memory:WgpuBuffer";
+/// The field in structure to determinate buffer usage, this is bitmask, the element should allocated output buffers which will
+/// contains all of required buffer usages
+pub const GST_CAPS_FIELD_WGPU_BUFFER_USAGE: &str = "buffer-usage";
 
 pub trait WgpuBufferMemoryExt {
     fn buffer(&self) -> &wgpu::Buffer;
@@ -52,6 +55,19 @@ impl WgpuBufferMemoryExt for WgpuBufferMemory {
 
     fn context(&self) -> &WgpuContext {
         &self.0.context
+    }
+}
+
+impl WgpuBufferMemory {
+    pub fn fill_from_gst(&mut self, src: &gst::MemoryRef) -> Result<(), glib::BoolError> {
+        let dst = self.get_mut().unwrap().upcast_memory_mut::<gst::Memory>();
+        let mut mapped_dst = dst.map_writable()?;
+        let mapped_src = src.map_readable()?;
+
+        let copy_size = mapped_dst.size().min(mapped_src.size());
+        mapped_dst[0..copy_size].copy_from_slice(&mapped_src[0..copy_size]);
+
+        Ok(())
     }
 }
 
@@ -233,7 +249,7 @@ mod imp {
 
         pub fn map_read(&self, size: u64) -> glib::ffi::gpointer {
             if !self.buffer.usage().contains(wgpu::BufferUsages::MAP_READ) {
-                gst::warning!(CAT, "trying to map read buffer which is not MAP_READ. You likely want to use buffer in GPU, but now trying to read from it directly");
+                // gst::warning!(CAT, "trying to map read buffer which is not MAP_READ. You likely want to use buffer in GPU, but now trying to read from it directly");
                 return self.map_write(size);
             }
 
@@ -493,6 +509,7 @@ mod imp {
                 ManuallyDrop::drop(&mut wgpu_mem_obj.buffer);
             };
 
+            // At this point allocator might be lost, do not use it after
             unsafe {
                 gst::ffi::gst_mini_object_unref(
                     wgpu_mem_obj.parent.allocator as *mut gst::ffi::GstMiniObject,
