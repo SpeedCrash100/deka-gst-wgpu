@@ -102,6 +102,18 @@ impl WgpuBufferMemoryAllocator {
 
         Ok(wgpu_mem)
     }
+
+    pub fn context(&self) -> WgpuContext {
+        let imp = self.imp();
+        let cell = unsafe { &*imp.context.get() };
+        cell.as_ref().unwrap().clone()
+    }
+
+    pub fn explicit_usages(&self) -> Option<wgpu::BufferUsages> {
+        let imp = self.imp();
+        let cell = unsafe { &*imp.usages.get() };
+        cell.as_ref().map(|x| *x)
+    }
 }
 
 mod imp {
