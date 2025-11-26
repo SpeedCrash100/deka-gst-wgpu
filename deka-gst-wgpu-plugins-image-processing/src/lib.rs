@@ -1,5 +1,6 @@
 mod wgpu_buffer_download;
 mod wgpu_buffer_upload;
+mod wgpu_sobel_buf;
 mod wgpu_sobel_mem;
 
 extern crate gstreamer as gst;
@@ -12,6 +13,7 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     wgpu_sobel_mem::register(plugin)?;
     wgpu_buffer_upload::register(plugin)?;
     wgpu_buffer_download::register(plugin)?;
+    wgpu_sobel_buf::register(plugin)?;
     Ok(())
 }
 
