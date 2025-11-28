@@ -2,13 +2,13 @@ use std::sync::LazyLock;
 
 use crate::glib;
 
-use deka_gst_wgpu::buffer_memory::WgpuBufferMemory;
+use deka_gst_wgpu::buffer_memory::{WgpuBufferMemory, GST_CAPS_FIELD_WGPU_BUFFER_USAGE};
 use deka_gst_wgpu::{prelude::*, WgpuBufferMemoryAllocator};
 use glib::object::Cast;
 use glib::subclass::{object::ObjectImpl, types::ObjectSubclass};
 use gst::prelude::ElementExt;
 use gst::subclass::prelude::*;
-use gst_base::subclass::prelude::BaseTransformImpl;
+use gst_base::subclass::prelude::*;
 use gst_base::subclass::BaseTransformMode;
 use gst_video::prelude::*;
 use parking_lot::Mutex;
@@ -26,6 +26,7 @@ static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
 #[derive(Debug)]
 pub struct WgpuBufferUpload {
     wgpu_context: Mutex<Option<WgpuContext>>,
+    src_usages: Mutex<wgpu::BufferUsages>,
 }
 
 impl WgpuBufferUpload {
@@ -63,6 +64,13 @@ impl WgpuBufferUpload {
     fn locked_context(&self) -> parking_lot::MappedMutexGuard<'_, WgpuContext> {
         parking_lot::MutexGuard::map(self.wgpu_context.lock(), |x| x.as_mut().unwrap())
     }
+
+    fn src_allowed_usages() -> impl IntoIterator<Item = wgpu::BufferUsages> {
+        [
+            wgpu::BufferUsages::MAP_WRITE,
+            wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+        ]
+    }
 }
 
 #[glib::object_subclass]
@@ -74,6 +82,7 @@ impl ObjectSubclass for WgpuBufferUpload {
     fn with_class(_klass: &Self::Class) -> Self {
         Self {
             wgpu_context: Mutex::new(None),
+            src_usages: Mutex::new(wgpu::BufferUsages::empty()),
         }
     }
 }
@@ -95,37 +104,35 @@ impl ElementImpl for WgpuBufferUpload {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
-            let src_buffer_usages = wgpu::BufferUsages::COPY_SRC;
-
             let sink_caps = gst::Caps::builder_full()
                 .structure(gst::Structure::new_empty("audio/x-raw"))
                 .structure(gst::Structure::new_empty("video/x-raw"))
                 .build();
 
-            let src_caps = gst::Caps::builder_full()
-                .structure_with_features(
-                    gst::Structure::builder("audio/x-raw")
-                        .field(
-                            deka_gst_wgpu::buffer_memory::GST_CAPS_FIELD_WGPU_BUFFER_USAGE,
-                            src_buffer_usages.bits(),
+            let mem_feature = gst::CapsFeatures::new([
+                deka_gst_wgpu::buffer_memory::GST_CAPS_FEATURE_MEMORY_WGPU_BUFFER,
+            ]);
+
+            let src_caps_builder = WgpuBufferUpload::src_allowed_usages()
+                .into_iter()
+                .map(|usage| usage.bits())
+                .fold(gst::Caps::builder_full(), |builder, bits| {
+                    builder
+                        .structure_with_features(
+                            gst::Structure::builder("audio/x-raw")
+                                .field(GST_CAPS_FIELD_WGPU_BUFFER_USAGE, bits)
+                                .build(),
+                            mem_feature.clone(),
                         )
-                        .build(),
-                    gst::CapsFeatures::new([
-                        deka_gst_wgpu::buffer_memory::GST_CAPS_FEATURE_MEMORY_WGPU_BUFFER,
-                    ]),
-                )
-                .structure_with_features(
-                    gst::Structure::builder("video/x-raw")
-                        .field(
-                            deka_gst_wgpu::buffer_memory::GST_CAPS_FIELD_WGPU_BUFFER_USAGE,
-                            src_buffer_usages.bits(),
+                        .structure_with_features(
+                            gst::Structure::builder("video/x-raw")
+                                .field(GST_CAPS_FIELD_WGPU_BUFFER_USAGE, bits)
+                                .build(),
+                            mem_feature.clone(),
                         )
-                        .build(),
-                    gst::CapsFeatures::new([
-                        deka_gst_wgpu::buffer_memory::GST_CAPS_FEATURE_MEMORY_WGPU_BUFFER,
-                    ]),
-                )
-                .build();
+                });
+
+            let src_caps = src_caps_builder.build();
 
             vec![
                 gst::PadTemplate::new(
@@ -207,25 +214,25 @@ impl BaseTransformImpl for WgpuBufferUpload {
             builder.build()
         } else {
             let mut builder = gst::Caps::builder_full();
+            let feature = gst::CapsFeatures::new([
+                deka_gst_wgpu::buffer_memory::GST_CAPS_FEATURE_MEMORY_WGPU_BUFFER,
+            ]);
 
             for s in caps.iter() {
-                let mut new_s = s.to_owned();
-                new_s.set(
-                    deka_gst_wgpu::buffer_memory::GST_CAPS_FIELD_WGPU_BUFFER_USAGE,
-                    wgpu::BufferUsages::COPY_SRC.bits(),
-                );
-                builder = builder.structure_with_features(
-                    new_s,
-                    gst::CapsFeatures::new([
-                        deka_gst_wgpu::buffer_memory::GST_CAPS_FEATURE_MEMORY_WGPU_BUFFER,
-                    ]),
-                );
+                builder = Self::src_allowed_usages()
+                    .into_iter()
+                    .map(|usage| usage.bits())
+                    .fold(builder, |builder, item| {
+                        let mut new_s = s.to_owned();
+                        new_s.set(GST_CAPS_FIELD_WGPU_BUFFER_USAGE, item);
+                        builder.structure_with_features(new_s, feature.clone())
+                    });
             }
 
             builder.build()
         };
 
-        gst::debug!(
+        gst::trace!(
             CAT,
             imp: self,
             "Transformed caps from {} to {} in direction {:?}; filter: {:?}",
@@ -242,6 +249,40 @@ impl BaseTransformImpl for WgpuBufferUpload {
         } else {
             Some(other_caps)
         }
+    }
+
+    fn set_caps(&self, incaps: &gst::Caps, outcaps: &gst::Caps) -> Result<(), gst::LoggableError> {
+        gst::info!(CAT, imp: self, "negotiated caps {:?} -> {:?}", incaps, outcaps);
+
+        let Some(outcaps_s) = outcaps.structure(0) else {
+            return Err(gst::loggable_error!(
+                CAT,
+                "missing structure in output caps"
+            ));
+        };
+
+        let src_usages_bits: u32 = match outcaps_s.get(GST_CAPS_FIELD_WGPU_BUFFER_USAGE) {
+            Ok(usage) => usage,
+            Err(err) => {
+                return Err(gst::loggable_error!(
+                    CAT,
+                    "cannot get buffer usage in input caps: {}",
+                    err
+                ));
+            }
+        };
+        let src_usages = wgpu::BufferUsages::from_bits_truncate(src_usages_bits);
+        if !src_usages.intersects(wgpu::BufferUsages::MAP_WRITE) {
+            return Err(gst::loggable_error!(
+                CAT,
+                "buffer usage({:?} in output caps cannot be mapped for write",
+                src_usages
+            ));
+        }
+
+        *self.src_usages.lock() = src_usages;
+
+        self.parent_set_caps(incaps, outcaps)
     }
 
     fn before_transform(&self, inbuf: &gst::BufferRef) {
@@ -307,7 +348,17 @@ impl BaseTransformImpl for WgpuBufferUpload {
         &self,
         query: &mut gst::query::Allocation,
     ) -> Result<(), gst::LoggableError> {
-        // We want have allocation where MAP_WRITE anc COPY_SRC available
+        // if we are here, we need to copy from system memory, creating buffer
+        // with MAP_WRITE required for output buffer
+        //
+
+        let src_usages = self.src_usages.lock();
+        if src_usages.is_empty() {
+            return Err(gst::loggable_error!(
+                CAT,
+                "decide_allocation called before negotiation"
+            ));
+        }
 
         let mut to_remove = vec![];
 
@@ -321,7 +372,7 @@ impl BaseTransformImpl for WgpuBufferUpload {
 
             match wgpu_allocator.explicit_usages() {
                 Some(usages) => {
-                    let required = wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC;
+                    let required = wgpu::BufferUsages::MAP_WRITE;
                     if !usages.contains(required) {
                         gst::trace!(CAT, imp: self, "skipping allocator at {pos}, usages is incorrect {} != {}", required.bits(), usages.bits());
                     }
@@ -340,10 +391,14 @@ impl BaseTransformImpl for WgpuBufferUpload {
             query.remove_nth_allocation_param(*pos as u32);
         }
 
-        if 0 == query.allocation_params().len() {
-            // Have to create own, it is same as we propose
-            self.propose_allocation(None, query)?;
+        if 0 < query.allocation_params().len() {
+            return Ok(());
         }
+
+        let ctx = self.wgpu_context.lock().as_ref().cloned().unwrap();
+        let allocator = WgpuBufferMemoryAllocator::new_with_explicit_usage(ctx, *src_usages);
+        let params = gst::AllocationParams::default();
+        query.add_allocation_param(Some(&allocator), params);
 
         Ok(())
     }
@@ -353,9 +408,17 @@ impl BaseTransformImpl for WgpuBufferUpload {
         _decide_query: Option<&gst::query::Allocation>,
         query: &mut gst::query::Allocation,
     ) -> Result<(), gst::LoggableError> {
-        let allocator =
-            WgpuBufferMemoryAllocator::new(self.wgpu_context.lock().as_ref().cloned().unwrap());
-        // Default params for MAP_WRITE buffers
+        let src_usages = self.src_usages.lock();
+        if src_usages.is_empty() {
+            return Err(gst::loggable_error!(
+                CAT,
+                "propose_allocation called before negotiation"
+            ));
+        }
+
+        let ctx = self.wgpu_context.lock().as_ref().cloned().unwrap();
+
+        let allocator = WgpuBufferMemoryAllocator::new_with_explicit_usage(ctx, *src_usages);
         let params = gst::AllocationParams::default();
         query.add_allocation_param(Some(&allocator), params);
 

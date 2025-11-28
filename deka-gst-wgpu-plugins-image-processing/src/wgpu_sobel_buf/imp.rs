@@ -1,6 +1,7 @@
 use std::sync::LazyLock;
 
 use deka_gst_wgpu::{
+    buffer_memory::GST_CAPS_FIELD_WGPU_BUFFER_USAGE, caps::make_wgpu_buffer_usages_for_caps,
     prelude::WgpuBufferMemoryExt, WgpuBufferMemory, WgpuBufferMemoryAllocator, WgpuContext,
     GST_CONTEXT_WGPU_TYPE,
 };
@@ -14,7 +15,7 @@ use gst::{
 };
 use gst_base::subclass::{prelude::*, BaseTransformMode};
 use gst_video::{prelude::*, subclass::prelude::*};
-use parking_lot::Mutex;
+use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
 
 use crate::glib;
 
@@ -38,6 +39,7 @@ struct WebGPUState {
 pub struct WgpuSobelBuf {
     wgpu_context: Mutex<Option<WgpuContext>>,
     pipeline: Mutex<Option<WebGPUState>>,
+    usages: Mutex<(wgpu::BufferUsages, wgpu::BufferUsages)>,
 }
 
 impl WgpuSobelBuf {
@@ -70,6 +72,29 @@ impl WgpuSobelBuf {
             .build();
         element.post_message(message).unwrap();
     }
+
+    fn sink_allowed_usages() -> impl IntoIterator<Item = wgpu::BufferUsages> {
+        [
+            wgpu::BufferUsages::COPY_SRC,
+            wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+        ]
+    }
+
+    fn src_allowed_usages() -> impl IntoIterator<Item = wgpu::BufferUsages> {
+        [
+            wgpu::BufferUsages::COPY_DST,
+            wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        ]
+    }
+
+    fn lock_src_usages(&self) -> MappedMutexGuard<'_, wgpu::BufferUsages> {
+        let usages = self.usages.lock();
+        MutexGuard::map(usages, |(_sink, src)| src)
+    }
+    fn lock_sink_usages(&self) -> MappedMutexGuard<'_, wgpu::BufferUsages> {
+        let usages = self.usages.lock();
+        MutexGuard::map(usages, |(sink, _src)| sink)
+    }
 }
 
 #[glib::object_subclass]
@@ -82,6 +107,7 @@ impl ObjectSubclass for WgpuSobelBuf {
         Self {
             wgpu_context: Mutex::new(None),
             pipeline: Mutex::new(None),
+            usages: Mutex::new((wgpu::BufferUsages::empty(), wgpu::BufferUsages::empty())),
         }
     }
 }
@@ -103,23 +129,29 @@ impl ElementImpl for WgpuSobelBuf {
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
         static PAD_TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
-            let caps = gst_video::VideoCapsBuilder::new()
+            let base_caps = gst_video::VideoCapsBuilder::new()
                 .format(gst_video::VideoFormat::Rgbx)
                 .features([deka_gst_wgpu::buffer_memory::GST_CAPS_FEATURE_MEMORY_WGPU_BUFFER])
                 .build();
+
+            let src_caps =
+                make_wgpu_buffer_usages_for_caps(&base_caps, WgpuSobelBuf::src_allowed_usages);
+            let sink_caps =
+                make_wgpu_buffer_usages_for_caps(&base_caps, WgpuSobelBuf::sink_allowed_usages);
+
             vec![
                 gst::PadTemplate::new(
                     "src",
                     gst::PadDirection::Src,
                     gst::PadPresence::Always,
-                    &caps,
+                    &src_caps,
                 )
                 .unwrap(),
                 gst::PadTemplate::new(
                     "sink",
                     gst::PadDirection::Sink,
                     gst::PadPresence::Always,
-                    &caps,
+                    &sink_caps,
                 )
                 .unwrap(),
             ]
@@ -167,6 +199,98 @@ impl BaseTransformImpl for WgpuSobelBuf {
                 Ok(())
             }
         }
+    }
+
+    fn transform_caps(
+        &self,
+        direction: gst::PadDirection,
+        caps: &gst::Caps,
+        filter: Option<&gst::Caps>,
+    ) -> Option<gst::Caps> {
+        let other_caps = if direction == gst::PadDirection::Sink {
+            make_wgpu_buffer_usages_for_caps(caps, Self::src_allowed_usages)
+        } else {
+            make_wgpu_buffer_usages_for_caps(caps, Self::sink_allowed_usages)
+        };
+
+        gst::trace!(
+            CAT,
+            imp: self,
+            "Transformed caps from {} to {} in direction {:?}; filter: {:?}",
+            caps,
+            other_caps,
+            direction,
+            filter
+        );
+
+        // In the end we need to filter the caps through an optional filter caps to get rid of any
+        // unwanted caps.
+        if let Some(filter) = filter {
+            Some(filter.intersect_with_mode(&other_caps, gst::CapsIntersectMode::First))
+        } else {
+            Some(other_caps)
+        }
+    }
+
+    fn set_caps(&self, incaps: &gst::Caps, outcaps: &gst::Caps) -> Result<(), gst::LoggableError> {
+        gst::info!(CAT, imp: self, "negotiated caps {:?} -> {:?}", incaps, outcaps);
+
+        let Some(outcaps_s) = outcaps.structure(0) else {
+            return Err(gst::loggable_error!(
+                CAT,
+                "missing structure in output caps"
+            ));
+        };
+
+        let src_usages_bits: u32 = match outcaps_s.get(GST_CAPS_FIELD_WGPU_BUFFER_USAGE) {
+            Ok(usage) => usage,
+            Err(err) => {
+                return Err(gst::loggable_error!(
+                    CAT,
+                    "cannot get buffer usage in input caps: {}",
+                    err
+                ));
+            }
+        };
+        let src_usages = wgpu::BufferUsages::from_bits_truncate(src_usages_bits);
+
+        let Some(incaps_s) = incaps.structure(0) else {
+            return Err(gst::loggable_error!(CAT, "missing structure in input caps"));
+        };
+        let sink_usages_bits: u32 = match incaps_s.get(GST_CAPS_FIELD_WGPU_BUFFER_USAGE) {
+            Ok(usage) => usage,
+            Err(err) => {
+                return Err(gst::loggable_error!(
+                    CAT,
+                    "cannot get buffer usage in input caps: {}",
+                    err
+                ));
+            }
+        };
+        let sink_usages = wgpu::BufferUsages::from_bits_truncate(sink_usages_bits);
+
+        if !sink_usages.contains(wgpu::BufferUsages::COPY_SRC) {
+            return Err(gst::loggable_error!(
+                CAT,
+                "input caps({:?}) cannot be used as copy src",
+                sink_usages
+            ));
+        }
+
+        if !src_usages.contains(wgpu::BufferUsages::COPY_DST) {
+            return Err(gst::loggable_error!(
+                CAT,
+                "output caps({:?}) cannot be used as copy dst",
+                src_usages
+            ));
+        }
+
+        {
+            let mut usages_lock = self.usages.lock();
+            *usages_lock = (sink_usages, src_usages);
+        }
+
+        self.parent_set_caps(incaps, outcaps)
     }
 
     fn transform(
@@ -285,9 +409,31 @@ impl BaseTransformImpl for WgpuSobelBuf {
         _decide_query: Option<&gst::query::Allocation>,
         query: &mut gst::query::Allocation,
     ) -> Result<(), gst::LoggableError> {
-        let allocator =
-            WgpuBufferMemoryAllocator::new(self.wgpu_context.lock().as_ref().cloned().unwrap());
-        // Default params for MAP_WRITE buffers
+        let (caps, _needs_pool) = query.get();
+
+        let Some(caps) = caps else {
+            return Err(gst::loggable_error!(CAT, "No caps in allocation query"));
+        };
+
+        let Some(caps_s) = caps.structure(0) else {
+            return Err(gst::loggable_error!(CAT, "No structure in caps"));
+        };
+
+        let sink_usages_bits: u32 = match caps_s.get(GST_CAPS_FIELD_WGPU_BUFFER_USAGE) {
+            Ok(usage) => usage,
+            Err(err) => {
+                return Err(gst::loggable_error!(
+                    CAT,
+                    "cannot get buffer usage in input caps: {}",
+                    err
+                ));
+            }
+        };
+        let sink_usages = wgpu::BufferUsages::from_bits_truncate(sink_usages_bits);
+
+        let ctx = self.wgpu_context.lock().as_ref().cloned().unwrap();
+
+        let allocator = WgpuBufferMemoryAllocator::new_with_explicit_usage(ctx, sink_usages);
         let params = gst::AllocationParams::default();
         query.add_allocation_param(Some(&allocator), params);
 

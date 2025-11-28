@@ -1,4 +1,5 @@
 pub mod buffer_memory;
+pub mod caps;
 pub mod context;
 pub mod texture_meta;
 
