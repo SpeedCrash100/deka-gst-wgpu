@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use glib::translate::IntoGlibPtr;
 use glib::translate::{from_glib, from_glib_full};
-use gst::{glib::subclass::types::ObjectSubclassIsExt, subclass::prelude::*};
+use gst::glib::subclass::types::ObjectSubclassIsExt;
 
 use crate::{glib, skip_assert_initialized, WgpuContext};
 
@@ -105,20 +105,6 @@ impl WgpuBufferMemoryAllocator {
         out
     }
 
-    pub fn alloc(
-        &self,
-        size: usize,
-        params: Option<&gst::AllocationParams>,
-    ) -> Result<WgpuBufferMemory, glib::BoolError> {
-        let imp = self.imp();
-        let base_mem = imp.alloc(size, params)?;
-        let wgpu_mem = base_mem
-            .downcast_memory::<WgpuBufferMemory>()
-            .expect("wgpu alloc returned not wgpu mem");
-
-        Ok(wgpu_mem)
-    }
-
     pub fn context(&self) -> WgpuContext {
         let imp = self.imp();
         let cell = unsafe { &*imp.context.get() };
@@ -153,7 +139,7 @@ mod imp {
     use crate::glib;
     use crate::WgpuContext;
 
-    pub const GST_WGPU_ALLOCATOR_TYPE: &[u8] = b"RustWgpuMemoryAllocator\0";
+    pub const GST_WGPU_ALLOCATOR_TYPE: &[u8] = b"RustWgpuBufferAllocator\0";
 
     trait GetMappedPointer {
         fn get_mapped_pointer(&self) -> *mut c_void;
@@ -492,7 +478,7 @@ mod imp {
                 core::ptr::write(&raw mut (*mem).buffer, ManuallyDrop::new(wgpu_buffer));
             }
 
-            gst::trace!(CAT, "allocated buffer {:p}, maxsize {}", mem, maxsize);
+            gst::debug!(CAT, "allocated buffer {:p}, maxsize {}", mem, maxsize);
 
             let out_mem = unsafe { gst::Memory::from_glib_full(mem as *mut gst::ffi::GstMemory) };
             Ok(out_mem)
@@ -518,7 +504,7 @@ mod imp {
 
             let layout = core::alloc::Layout::new::<WgpuMemory>();
             unsafe { std::alloc::dealloc(wgpu_mem.as_mut_ptr() as *mut u8, layout) };
-            gst::trace!(CAT, "free buffer {:p}", wgpu_mem.as_mut_ptr());
+            gst::debug!(CAT, "free buffer {:p}", wgpu_mem.as_mut_ptr());
             std::mem::forget(wgpu_mem); // We dealloc the memory ourselves
         }
     }

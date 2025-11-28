@@ -1,5 +1,6 @@
 pub mod buffer_memory;
 pub mod context;
+pub mod texture_meta;
 
 use gst::glib;
 extern crate gstreamer as gst;
