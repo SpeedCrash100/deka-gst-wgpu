@@ -1,6 +1,7 @@
 pub mod buffer_memory;
 pub mod caps;
 pub mod context;
+pub mod texture_memory;
 pub mod texture_meta;
 
 use gst::glib;

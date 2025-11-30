@@ -2,6 +2,8 @@
 //! Helpers to work with caps
 //!
 
+pub mod transform;
+
 /// Creates copy of caps where each structure copied with all buffer usages from `usages`
 pub fn make_wgpu_buffer_usages_for_caps<F, I>(input: &gst::Caps, usages: F) -> gst::Caps
 where

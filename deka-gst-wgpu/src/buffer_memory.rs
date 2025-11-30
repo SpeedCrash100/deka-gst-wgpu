@@ -454,13 +454,13 @@ mod imp {
                 (None, false) => wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
             };
 
-            // Reject if we are trying to create mappable buffer with no usage MAP_* usage
             if !mem_flags.contains(gst::MemoryFlags::NOT_MAPPABLE)
                 && !usages.intersects(wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::MAP_WRITE)
             {
-                return Err(glib::bool_error!(
+                gst::warning!(
+                    CAT, imp: self,
                     "trying to alloc not mappable memory without setting NOT_MAPPABLE"
-                ));
+                );
             }
 
             let wgpu_buffer = self.device().create_buffer(&wgpu::BufferDescriptor {

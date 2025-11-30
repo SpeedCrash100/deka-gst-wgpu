@@ -352,6 +352,8 @@ impl BaseTransformImpl for WgpuBufferUpload {
         // with MAP_WRITE required for output buffer
         //
 
+        gst::info!(CAT, imp: self, "Deciding allocs");
+
         let src_usages = self.src_usages.lock();
         if src_usages.is_empty() {
             return Err(gst::loggable_error!(
