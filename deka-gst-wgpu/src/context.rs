@@ -50,18 +50,10 @@ glib::wrapper! {
 
 impl Default for WgpuContext {
     fn default() -> Self {
-        Self::new(
+        Self::new_with_all_limits(
             &wgpu::RequestAdapterOptions {
                 compatible_surface: None,
                 ..Default::default()
-            },
-            &wgpu::DeviceDescriptor {
-                label: None,
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
             },
             PollType::Manual,
         )
@@ -106,6 +98,51 @@ impl WgpuContext {
         };
 
         let (device, queue) = match pollster::block_on(adapter.request_device(&desc)) {
+            Ok(device) => device,
+            Err(err) => {
+                gst::error!(CAT, "Failed to request device: {}", err);
+                return Err(Box::new(err));
+            }
+        };
+
+        let inner = imp::Inner {
+            instance,
+            adapter,
+            device,
+            queue,
+        };
+
+        Ok(Self::from_inner(inner, poll_type))
+    }
+
+    pub fn new_with_all_limits(
+        adapter_options: &wgpu::RequestAdapterOptions<'_, '_>,
+        poll_type: PollType,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let instance_description = wgpu::InstanceDescriptor::from_env_or_default();
+        let instance = wgpu::Instance::new(&instance_description);
+
+        let adapter = match pollster::block_on(instance.request_adapter(&adapter_options)) {
+            Ok(adapter) => adapter,
+            Err(err) => {
+                gst::error!(CAT, "Failed to request adapter: {}", err);
+                return Err(Box::new(err));
+            }
+        };
+
+        let mut features = adapter.features();
+        features.set(wgpu::Features::all_experimental_mask(), false);
+
+        let dev_descriptor = wgpu::DeviceDescriptor {
+            label: Some("deka-gst-wgpu-device"),
+            memory_hints: wgpu::MemoryHints::Performance,
+            required_features: features,
+            required_limits: adapter.limits(),
+            experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            trace: wgpu::Trace::Off,
+        };
+
+        let (device, queue) = match pollster::block_on(adapter.request_device(&dev_descriptor)) {
             Ok(device) => device,
             Err(err) => {
                 gst::error!(CAT, "Failed to request device: {}", err);
@@ -189,6 +226,16 @@ impl WgpuContext {
 
     /// Get the wgpu device
     #[inline]
+    pub fn instance(&self) -> &wgpu::Instance {
+        let out = unsafe { &*self.imp().inner.get() };
+        // SAFETY: the only one _pub_ constructor always init inner
+        out.as_ref()
+            .map(|x| &x.instance)
+            .expect("inner is None, you must create WgpuContext using associated WgpuContext::new")
+    }
+
+    /// Get the wgpu device
+    #[inline]
     pub fn device(&self) -> &wgpu::Device {
         let out = unsafe { &*self.imp().inner.get() };
         // SAFETY: the only one _pub_ constructor always init inner
@@ -216,6 +263,23 @@ impl WgpuContext {
     pub fn poll_type(&self) -> PollType {
         let out = unsafe { &*self.imp().poll_type.get() };
         *out
+    }
+
+    /// Tries to figure out the backed type of context
+    pub fn backend(&self) -> Option<wgpu::Backend> {
+        let inner = unsafe { &*self.imp().inner.get() }.as_ref().unwrap();
+
+        let is_gles = unsafe { inner.instance.as_hal::<wgpu::hal::gles::Api>().is_some() };
+        if is_gles {
+            return Some(wgpu::Backend::Gl);
+        }
+
+        let is_vulkan = unsafe { inner.instance.as_hal::<wgpu::hal::vulkan::Api>().is_some() };
+        if is_vulkan {
+            return Some(wgpu::Backend::Vulkan);
+        }
+
+        None
     }
 
     fn query_context_pad(element: &gst::Element, pad: &gst::Pad) -> Option<gst::Context> {
